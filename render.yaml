@@ -1,0 +1,21 @@
+# Render Blueprint 配置文件
+# 将项目推送到 GitHub 后，在 Render Dashboard 选择 "Blueprints" 一键部署
+# https://dashboard.render.com/blueprints
+
+services:
+  - type: web
+    name: paymvp
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && node server.js
+    envVars:
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: PORT
+        value: "3000"
