@@ -71,17 +71,17 @@
   <script>
     (async () => {
       const params = new URLSearchParams(window.location.search);
-      const sessionId = params.get('session_id');
+      const orderId = params.get('order_id');
 
       const container = document.getElementById('order-content');
 
-      if (!sessionId) {
+      if (!orderId) {
         container.innerHTML = '<p class="text-gray-400">订单信息不可用</p>';
         return;
       }
 
       try {
-        const res = await fetch(`/api/orders/${sessionId}`);
+        const res = await fetch(`/api/orders/${orderId}`);
         if (!res.ok) {
           container.innerHTML = '<p class="text-gray-400">订单信息加载失败</p>';
           return;

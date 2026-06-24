@@ -2,9 +2,17 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-// ── Stripe 初始化 ────────────────────────────────────
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+// ── Creem API 配置 ───────────────────────────────────
+const CREEM_BASE = process.env.CREEM_TEST_MODE === 'true'
+  ? 'https://test-api.creem.io'
+  : 'https://api.creem.io';
+
+const CREEM_API_KEY = process.env.CREEM_API_KEY;
+const CREEM_WEBHOOK_SECRET = process.env.CREEM_WEBHOOK_SECRET;
+const CREEM_PRODUCT_ID = process.env.CREEM_PRODUCT_ID;
+const CLIENT_URL = process.env.CLIENT_URL || 'https://paymvp.onrender.com';
 
 // ── orders.json 路径 ─────────────────────────────────
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -27,115 +35,121 @@ function readOrders() {
   }
 }
 
-// ── 工具：写入订单 ───────────────────────────────────
-function saveOrder(order) {
+// ── 工具：写入/更新订单 ──────────────────────────────
+function upsertOrder(order) {
   const orders = readOrders();
-  orders.push(order);
+  const idx = orders.findIndex((o) => o.id === order.id);
+  if (idx >= 0) {
+    orders[idx] = order;
+  } else {
+    orders.push(order);
+  }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(ORDERS_FILE, JSON.stringify({ orders }, null, 2));
   console.log('[PayMvp] 订单已保存:', order.id);
 }
 
-// ── 1. 创建 Checkout Session ─────────────────────────
+// ── 1. 创建 Creem Checkout ─────────────────────────
 // POST /api/create-checkout-session
 router.post('/create-checkout-session', async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: 'Pro 会员',
-              description: '终身授权 · 无限更新 · 优先客服支持',
-            },
-            unit_amount: 1, // $0.01 (test)
-          },
-          quantity: 1,
-        },
-      ],
-      success_url: `${process.env.CLIENT_URL || 'https://paymvp.onrender.com'}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL || 'https://paymvp.onrender.com'}/index.html`,
+    const body = {
+      product_id: CREEM_PRODUCT_ID,
+      success_url: `${CLIENT_URL}/success.html?order_id={ORDER_ID}`,
+      cancel_url: `${CLIENT_URL}/index.html`,
+    };
+
+    const response = await fetch(`${CREEM_BASE}/v1/checkouts`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': CREEM_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
     });
 
-    res.json({ url: session.url });
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('[PayMvp] Creem 创建 Checkout 失败:', data);
+      return res.status(500).json({ error: data.message || '创建支付会话失败' });
+    }
+
+    res.json({ url: data.checkout_url });
   } catch (err) {
-    console.error('[PayMvp] 创建 Checkout Session 失败:', err.message);
+    console.error('[PayMvp] 创建 Checkout 失败:', err.message);
     res.status(500).json({ error: '创建支付会话失败' });
   }
 });
 
-// ── 2. Webhook 回调 ──────────────────────────────────
+// ── 2. Creem Webhook 回调 ──────────────────────────
 // POST /api/webhook
 router.post('/webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature'];
+  const sig = req.headers['creem-signature'];
+  const rawBody = req.body; // express.raw() 返回 Buffer
+
+  // 验证签名：HMAC-SHA256
+  const computed = crypto
+    .createHmac('sha256', CREEM_WEBHOOK_SECRET)
+    .update(rawBody)
+    .digest('hex');
+
+  if (computed !== sig) {
+    console.error('[PayMvp] Webhook 签名验证失败');
+    return res.status(401).send('Invalid signature');
+  }
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    event = JSON.parse(rawBody.toString());
   } catch (err) {
-    console.error('[PayMvp] Webhook 签名验证失败:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send('Invalid JSON');
   }
 
-  // 处理支付成功事件
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
+  console.log('[PayMvp] Webhook 事件:', event.eventType);
+
+  // 处理支付完成事件
+  if (event.eventType === 'checkout.completed') {
+    const obj = event.object;
+    const orderData = obj.order || {};
 
     const order = {
-      id: session.id,
-      amount: session.amount_total,
-      currency: session.currency,
-      customerEmail: session.customer_details?.email || '',
-      customerName: session.customer_details?.name || '',
-      paymentStatus: session.payment_status,
+      id: obj.id,
+      orderId: orderData.id || '',
+      amount: orderData.amount || 0,
+      currency: orderData.currency || 'usd',
+      customerEmail: obj.customer?.email || '',
+      customerName: obj.customer?.name || '',
+      paymentStatus: orderData.status || 'paid',
+      productName: obj.product?.name || '',
       status: 'completed',
-      createdAt: new Date(session.created * 1000).toISOString(),
+      createdAt: new Date(event.created_at || Date.now()).toISOString(),
     };
 
-    saveOrder(order);
-    console.log('[PayMvp] 支付成功:', session.id);
+    upsertOrder(order);
+    console.log('[PayMvp] 支付成功:', obj.id, order.customerEmail);
   }
 
   res.json({ received: true });
 });
 
 // ── 3. 订单查询 ──────────────────────────────────────
-// GET /api/orders/:sessionId
-router.get('/orders/:sessionId', async (req, res) => {
+// GET /api/orders/:orderId
+router.get('/orders/:orderId', async (req, res) => {
   try {
-    const { sessionId } = req.params;
+    const { orderId } = req.params;
 
-    // 先从本地文件查
+    // 从本地文件查（支持 checkout_id 和 order_id 两种查询）
     const orders = readOrders();
-    const localOrder = orders.find((o) => o.id === sessionId);
-    if (localOrder) {
-      return res.json(localOrder);
+    const order = orders.find(
+      (o) => o.id === orderId || o.orderId === orderId
+    );
+
+    if (order) {
+      return res.json(order);
     }
 
-    // 本地没有，从 Stripe 实时拉取
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (!session) {
-      return res.status(404).json({ error: '订单未找到' });
-    }
-
-    const order = {
-      id: session.id,
-      amount: session.amount_total,
-      currency: session.currency,
-      customerEmail: session.customer_details?.email || '',
-      customerName: session.customer_details?.name || '',
-      paymentStatus: session.payment_status,
-      status: session.payment_status === 'paid' ? 'completed' : session.payment_status,
-      createdAt: new Date(session.created * 1000).toISOString(),
-    };
-
-    res.json(order);
+    res.status(404).json({ error: '订单未找到' });
   } catch (err) {
     console.error('[PayMvp] 查询订单失败:', err.message);
     res.status(500).json({ error: '查询订单失败' });

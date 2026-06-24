@@ -11,10 +11,14 @@ services:
     buildCommand: cd backend && npm install
     startCommand: cd backend && node server.js
     envVars:
-      - key: STRIPE_SECRET_KEY
+      - key: CREEM_API_KEY
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: CREEM_WEBHOOK_SECRET
         sync: false
+      - key: CREEM_PRODUCT_ID
+        sync: false
+      - key: CREEM_TEST_MODE
+        value: "true"
       - key: CLIENT_URL
         sync: false
       - key: PORT
