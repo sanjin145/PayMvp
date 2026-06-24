@@ -50,13 +50,13 @@ router.post('/create-checkout-session', async (req, res) => {
               name: 'Pro 会员',
               description: '终身授权 · 无限更新 · 优先客服支持',
             },
-            unit_amount: 9900, // $99.00
+            unit_amount: 1, // $0.01 (test)
           },
           quantity: 1,
         },
       ],
-      success_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/index.html`,
+      success_url: `${process.env.CLIENT_URL || 'https://paymvp.onrender.com'}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.CLIENT_URL || 'https://paymvp.onrender.com'}/index.html`,
     });
 
     res.json({ url: session.url });
